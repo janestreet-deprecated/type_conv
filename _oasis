@@ -2,7 +2,7 @@
 OASISFormat:  0.3
 OCamlVersion: >= 3.12.1
 Name:         type_conv
-Version:      108.00.01
+Version:      108.00.02
 Synopsis:     support library for preprocessor type conversions
 Authors:      Martin Sandin,
               Markus Mottl,
@@ -12,14 +12,13 @@ LicenseFile:  LICENSE
 Plugins:      StdFiles (0.3), DevFiles (0.3), META (0.3)
 BuildTools:   ocamlbuild, camlp4o
 XStdFilesAUTHORS: false
-XStdFilesINSTALLFilename: INSTALL
 XStdFilesREADME: false
 
 Library pa_type_conv
   Path:               lib
   FindlibName:        type_conv
   Modules:            Pa_type_conv
-  BuildDepends:       camlp4.quotations, camlp4.extend
+  BuildDepends:       camlp4.quotations, camlp4.extend, camlp4.macro
   CompiledObject:     byte
   XMETAType:          syntax
   XMETARequires:      camlp4

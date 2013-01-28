@@ -176,10 +176,16 @@ module Gen : sig
   (** [get_tparam_id tp] @return the string identifier associated with
       [tp] if it is a type parameter.  @raise Failure otherwise. *)
 
-  val type_is_recursive : string -> ctyp -> bool
-  (** [type_is_recursive id tp] @return whether the type [tp] with name [id]
+  val type_is_recursive :
+    ?short_circuit:(ctyp -> bool option) ->
+    string -> ctyp -> bool
+  (** [type_is_recursive ?short_circuit id tp]
+      @return whether the type [tp] with name [id]
       refers to itself, assuming that it is not mutually recursive with
-      another type. *)
+      another type.
+      
+      @param short_circuit allows you to override the search for certain
+      type expressions. *)
 
   val drop_variance_annotations : ctyp -> ctyp
   (** [drop_variance_annotations tp] @return the type resulting from dropping

@@ -1,15 +1,12 @@
 (* Pa_type_conv: Preprocessing Module for Registering Type Conversions *)
 
 open Printf
-open Lexing
 
 open Camlp4
 open PreCast
 open Ast
 
 (* Utility functions *)
-
-let both fa fb (a, b) = fa a, fb b
 
 let get_loc_err loc msg =
   sprintf "File \"%s\", line %d, characters %d-%d: %s"
@@ -270,9 +267,13 @@ module Gen = struct
     | <:ctyp< '$id$ >> | <:ctyp< +'$id$ >> | <:ctyp< -'$id$ >> -> id
     | tp -> error tp ~fn:"get_tparam_id" ~msg:"not a type parameter"
 
-  let type_is_recursive type_name tp =
+  let type_is_recursive ?(short_circuit = fun _ -> None) type_name tp =
     let bad_type tp = unknown_type tp "type_is_recursive" in
-    let rec loop = function
+    let rec loop ctyp =
+      match short_circuit ctyp with
+      | None -> loop' ctyp
+      | Some ans -> ans
+    and loop' = function
       | <:ctyp< private $tp$>> -> loop tp
       | <:ctyp< $tp1$ $tp2$ >>
       | <:ctyp< $tp1$ * $tp2$ >>
@@ -307,7 +308,15 @@ module Gen = struct
       | <:ctyp< >> -> false
       | <:ctyp< (module $module_type$) >> -> loop_module_type module_type
       | Ast.TyDcl _
-      | Ast.TyAnt _ as tp -> bad_type tp
+      | (IFDEF OCAML_4 THEN
+           Ast.TyAnt _
+           | Ast.TyTypePol _
+           | Ast.TyAnP _
+           | Ast.TyAnM _
+         ELSE
+           Ast.TyAnt _
+         ENDIF)
+       as tp -> bad_type tp
     and loop_module_type = function
       | <:module_type< $module_type$ with $with_constr$ >> ->
           let rec loop_with_constr = function
@@ -446,6 +455,24 @@ let generator_arg =
         Some (fetch_generator_arg 1 strm)
     | _ -> None)
 
+let mk_ctyp _loc name params =
+  let rec loop acc = function
+    | [] -> acc
+    | x :: xs ->
+      loop (Ast.TyApp (_loc, acc, Gen.drop_variance_annotations x)) xs
+  in
+  loop <:ctyp< $lid:name$ >> params
+
+let rec types_used_by_type_conv = function
+  | Ast.TyDcl (_loc, name, tps, _rhs, _cl) ->
+    <:str_item< value _ (_ : $mk_ctyp _loc name tps$) = () >>
+  | Ast.TyAnd (_loc, td1, td2) ->
+    <:str_item<
+      $types_used_by_type_conv td1$;
+      $types_used_by_type_conv td2$
+    >>
+  | _ -> assert false
+
 DELETE_RULE Gram str_item: "module"; a_UIDENT; module_binding0 END;
 
 EXTEND Gram
@@ -464,7 +491,11 @@ EXTEND Gram
     [[
       "type"; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
-        <:str_item< type $tds$; $gen_derived_defs _loc tds drvs$ >>
+        <:str_item<
+          type $tds$;
+          $types_used_by_type_conv tds$;
+          $gen_derived_defs _loc tds drvs$
+        >>
     ]];
 
   str_item:
