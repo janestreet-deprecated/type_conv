@@ -12,7 +12,7 @@ val get_conv_path : unit -> string
 (** [get_conv_path ()] @return the name to module containing a type
     as required for error messages. *)
 
-val add_generator : ?is_exn : bool -> string -> (ctyp -> str_item) -> unit
+val add_generator : ?is_exn : bool -> string -> (bool -> ctyp -> str_item) -> unit
 (** [add_generator ?is_exn name gen] adds the code generator [gen],
     which maps type or exception declarations to structure items, where
     [is_exn] specifies whether the declaration is an exception.  Note that
@@ -24,7 +24,7 @@ val add_generator : ?is_exn : bool -> string -> (ctyp -> str_item) -> unit
 
 val add_generator_with_arg :
   ?is_exn : bool -> string -> 'a Camlp4.PreCast.Gram.Entry.t ->
-  ('a option -> ctyp -> str_item) -> unit
+  ('a option -> bool -> ctyp -> str_item) -> unit
 (** [add_generator_with_arg ?is_exn name entry generator] same as
     [add_generator], but the generator may accept an argument, which is
     parsed with [entry]. *)
@@ -37,19 +37,24 @@ val rm_generator : ?is_exn : bool -> string -> unit
 *)
 
 val add_sig_generator :
-  ?is_exn : bool -> string -> (ctyp -> sig_item) -> unit
-(** [add_sig_generator ?is_exn name gen] adds the code generator [gen],
+  ?delayed : bool -> ?is_exn : bool ->
+  string -> (bool -> ctyp -> sig_item) -> unit
+(** [add_sig_generator ?delayed ?is_exn name gen] adds the code generator [gen],
     which maps type or exception declarations to signature items, where
     [is_exn] specifies whether the declaration is an exception.  Note that the
-    original type/exception declarations get added automatically in any case.
+    original type/exception declarations get added automatically in any case. If
+    [delayed] is set to true, the output of this generator is appended to the
+    signature in which it's defined
 
+    @param delayed = [false]
     @param is_exn = [false]
 *)
 
 val add_sig_generator_with_arg :
-  ?is_exn : bool -> string -> 'a Camlp4.PreCast.Gram.Entry.t ->
-  ('a option -> ctyp -> sig_item) -> unit
-(** [add_sig_generator_with_arg ?is_exn name entry generator] same as
+  ?delayed : bool -> ?is_exn : bool -> string ->
+  'a Camlp4.PreCast.Gram.Entry.t ->
+  ('a option -> bool -> ctyp -> sig_item) -> unit
+(** [add_sig_generator_with_arg ?delayed ?is_exn name entry generator] same as
     [add_sig_generator], but the generator may accept an argument,
     which is parsed with [entry]. *)
 
@@ -61,7 +66,7 @@ val rm_sig_generator : ?is_exn : bool -> string -> unit
 *)
 
 (** Type of record field code generators *)
-type record_field_generator = Loc.t -> unit
+type record_field_generator = ctyp -> unit
 
 val add_record_field_generator : string -> record_field_generator -> unit
 (** [add_record_field_generator gen_name gen] adds the record field code
@@ -81,6 +86,33 @@ val rm_record_field_generator : string -> unit
 (** [rm_record_field_generator name] removes the record field code generator
     named [name]. *)
 
+(** {6 Generator sets registration} *)
+
+val add_sig_set : ?is_exn: bool -> string -> set: string list -> unit
+(** [add_sig_set ?is_exn id ~set] adds the generator [id] to the list
+    of generators for signatures.
+    This generator will behave as if is all the generators from [set]
+    had been given instead. Any duplicate arising from repeatedly
+    expanding such generators are removed.
+    If [is_exn], then it is a generator for exception declaration, or
+    else it is a generator for type declaration.
+*)
+
+val add_str_set : ?is_exn: bool -> string -> set: string list -> unit
+(** [add_str_set ?is_exn id ~set] behaves exactly like
+    [add_sig_set ?is_exn id ~set] but for structure items instead of
+    signatures items.
+*)
+
+val add_set :
+  kind:[`Str | `Sig | `Both] ->
+  is_exn:[`Yes | `No | `Both] ->
+  string ->
+  set:string list ->
+  unit
+(** [add_set ~kind ~is_exn id ~set] is a shorthand for doing multiple
+    calls to [add_str_set] and [add_sig_set]
+*)
 
 (** {6 Utility functions} *)
 
@@ -183,7 +215,7 @@ module Gen : sig
       @return whether the type [tp] with name [id]
       refers to itself, assuming that it is not mutually recursive with
       another type.
-      
+
       @param short_circuit allows you to override the search for certain
       type expressions. *)
 
@@ -194,4 +226,22 @@ module Gen : sig
   val find_record_default : Loc.t -> expr option
   (** [find_record_default loc] @return the optional default expression
       associated with the record field at source location [loc] if defined. *)
+
+  val delay_sig_item : sig_item -> unit
+  (** [delay_sig_item item] places [item] at the end of the current signature *)
+end
+
+(** {6 Utility functions to rewrite type definitions} *)
+
+module Rewrite_tds : sig
+  val sig_ : Loc.t -> bool -> ctyp -> sig_item
+  (** [sig_ loc rec_ typedefs] rewrites the given type definition to make it either
+      recursive or non recursive.
+      For instance, the parser calls [sig_ loc false (TyDcl (_, t, [], t, []))] when it
+      encouters [type t = t] and calls [sig_ loc true (TyDcl (_, t, [], t, []))] when it
+      encouters [type nonrec t = t] in signatures. *)
+
+  val str_ : Loc.t -> bool -> ctyp -> str_item
+  (** [str_ loc rec_ typedefs] does the same thing as [sig_ loc rec_ typedefs], except
+      that it returns a structure item instead of a signature item. *)
 end

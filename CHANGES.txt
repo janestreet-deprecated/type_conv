@@ -1,3 +1,7 @@
+2012-07-15:  Added support for record field annotations and defaults.
+
+             Fixes for upcoming OCaml 4.00 release.
+
 2011-09-15:  Fixes to improve package dependency resolution.
 
 2011-08-02:  Added missing module type case for "module type of".

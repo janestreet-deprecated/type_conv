@@ -65,29 +65,62 @@ let pop_conv_path () =
   | _ -> ()
 
 
+module Signature_stack = struct
+  module Item = struct
+    type t = Ast.sig_item list ref
+
+    let create () = ref []
+
+    let delayed_sigs t      = List.rev !t
+    let delay_sig    t item = t := item :: !t
+  end
+
+  let bottom : Item.t = Item.create ()
+  let stack : Item.t list ref = ref [bottom]
+
+  let push () =
+    stack := Item.create () :: !stack
+
+  let pop () =
+    match !stack with
+    | [] -> failwith "BUG: signature stack is empty"
+    | top :: rest -> stack := rest; top
+
+  let top () =
+    match !stack with
+    | [] -> failwith "BUG: signature stack is empty"
+    | top :: _ -> top
+end
+
 (* Generator registration *)
 
+type 'str_or_sig generator =
+[ `Actual_generator of
+    (Gram.Token.t * Syntax.Gram.token_info) list option ->
+    bool ->
+    Syntax.Ast.ctyp ->
+    'str_or_sig
+| `Set of string list ]
 
 (* Map of "with"-generators for types in structures *)
-let generators = Hashtbl.create 0
+let generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for types in signatures *)
-let sig_generators = Hashtbl.create 0
+let sig_generators : (string, Ast.sig_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for exceptions in structures *)
-let exn_generators = Hashtbl.create 0
+let exn_generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for exceptions in signatures *)
-let sig_exn_generators = Hashtbl.create 0
+let sig_exn_generators : (string, Ast.sig_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for record fields *)
-type record_field_generator = Loc.t -> unit
-
-let record_field_generators = Hashtbl.create 0
+type record_field_generator = Ast.ctyp -> unit
+let record_field_generators : (string, unit generator) Hashtbl.t = Hashtbl.create 0
 
 (* Check that there is no argument for generators that do not expect any *)
-let no_arg id e arg typ =
-  if arg = None then e typ
+let no_arg id e arg =
+  if arg = None then e
   else
     failwith (
       "Pa_type_conv: generator '" ^ id ^ "' does not expect an argument")
@@ -101,16 +134,19 @@ let parse_with entry = function
 (* Entry which ignores its input *)
 let ignore_tokens = Gram.Entry.of_parser "ignore_tokens" ignore
 
+let make_generator entry e =
+  `Actual_generator (fun arg rec_ typ -> e (parse_with entry arg) rec_ typ)
+
 (* Add new generator, fail if already defined *)
-let safe_add_gen gens id entry e =
+let safe_add_gen gens id gen_or_set =
   if Hashtbl.mem gens id then
     failwith ("Pa_type_conv: generator '" ^ id ^ "' defined multiple times")
-  else Hashtbl.add gens id (fun arg typ -> e (parse_with entry arg) typ)
+  else Hashtbl.add gens id gen_or_set
 
 (* Register a "with"-generator for types in structures *)
 let add_generator_with_arg ?(is_exn = false) id entry e =
   let gens = if is_exn then exn_generators else generators in
-  safe_add_gen gens id entry e
+  safe_add_gen gens id (make_generator entry e)
 
 let add_generator ?is_exn id e =
   add_generator_with_arg ?is_exn id ignore_tokens (no_arg id e)
@@ -121,12 +157,20 @@ let rm_generator ?(is_exn = false) id =
   Hashtbl.remove gens id
 
 (* Register a "with"-generator for types in signatures *)
-let add_sig_generator_with_arg ?(is_exn = false) id entry e =
+let add_sig_generator_with_arg ?(delayed = false) ?(is_exn = false) id entry e =
+  let e =
+    if not delayed then e
+    else fun arg _rec tds ->
+      Signature_stack.Item.delay_sig
+        (Signature_stack.top ())
+        (e arg _rec tds);
+      Ast.SgNil Loc.ghost
+  in
   let gens = if is_exn then sig_exn_generators else sig_generators in
-  safe_add_gen gens id entry e
+  safe_add_gen gens id (make_generator entry e)
 
-let add_sig_generator ?is_exn id e =
-  add_sig_generator_with_arg ?is_exn id ignore_tokens (no_arg id e)
+let add_sig_generator ?delayed ?is_exn id e =
+  add_sig_generator_with_arg ?delayed ?is_exn id ignore_tokens (no_arg id e)
 
 (* Remove a "with"-generator for types in signatures *)
 let rm_sig_generator ?(is_exn = false) id =
@@ -135,7 +179,8 @@ let rm_sig_generator ?(is_exn = false) id =
 
 (* Register a "with"-generator for record fields *)
 let add_record_field_generator_with_arg id entry e =
-  safe_add_gen record_field_generators id entry e
+  let e arg _rec tp = e arg tp in
+  safe_add_gen record_field_generators id (make_generator entry e)
 
 let add_record_field_generator id e =
   add_record_field_generator_with_arg id ignore_tokens (no_arg id e)
@@ -143,12 +188,51 @@ let add_record_field_generator id e =
 (* Remove a "with"-generator for record fields *)
 let rm_record_field_generator id = Hashtbl.remove record_field_generators id
 
+let add_set_with_tbl ~tbl ~id ~set ~descr =
+  if List.mem id set then
+    failwith (Printf.sprintf "Set of generator %s for %s is recursive" id descr);
+
+  try
+    let absent = List.find (fun id -> not (Hashtbl.mem tbl id)) set in
+    failwith (
+      sprintf "Set of generator %s for %s contains the generator %s, which is undefined"
+        id descr absent
+    )
+  with Not_found ->
+    safe_add_gen tbl id (`Set set)
+
+let add_sig_set ?(is_exn = false) id ~set =
+  let tbl = if is_exn then sig_exn_generators else sig_generators in
+  let descr = if is_exn then "exceptions in signature items" else "types in signature items" in
+  add_set_with_tbl ~tbl ~id ~set ~descr
+
+let add_str_set ?(is_exn = false) id ~set =
+  let tbl = if is_exn then exn_generators else generators in
+  let descr = if is_exn then "exceptions in structure items" else "types in structure items" in
+  add_set_with_tbl ~tbl ~id ~set ~descr
+
+let add_set ~kind ~is_exn id ~set =
+  let exn_poss =
+    match is_exn with
+    | `Yes -> [true]
+    | `No -> [false]
+    | `Both -> [true; false] in
+  let add_poss =
+    match kind with
+    | `Str -> [add_str_set]
+    | `Sig -> [add_sig_set]
+    | `Both -> [add_str_set; add_sig_set] in
+  List.iter (fun (add : ?is_exn:_ -> _) ->
+    List.iter (fun is_exn ->
+      add ~is_exn id ~set
+    ) exn_poss
+  ) add_poss
 
 (* General purpose code generation module *)
 
 module Gen = struct
   (* Map of record field source locations to their default expression *)
-  let record_defaults = Hashtbl.create 0
+  let record_defaults : (Loc.t, Ast.expr) Hashtbl.t = Hashtbl.create 0
 
   let find_record_default loc =
     try Some (Hashtbl.find record_defaults loc) with Not_found -> None
@@ -267,92 +351,101 @@ module Gen = struct
     | <:ctyp< '$id$ >> | <:ctyp< +'$id$ >> | <:ctyp< -'$id$ >> -> id
     | tp -> error tp ~fn:"get_tparam_id" ~msg:"not a type parameter"
 
-  let type_is_recursive ?(short_circuit = fun _ -> None) type_name tp =
-    let bad_type tp = unknown_type tp "type_is_recursive" in
-    let rec loop ctyp =
+  exception Stop
+  class type_is_recursive short_circuit type_name = object (self)
+    inherit fold as super
+    method ctyp = function
+    | <:ctyp< $lid:id$ >> -> if id = type_name then raise Stop else self
+    | ctyp ->
       match short_circuit ctyp with
-      | None -> loop' ctyp
-      | Some ans -> ans
-    and loop' = function
-      | <:ctyp< private $tp$>> -> loop tp
-      | <:ctyp< $tp1$ $tp2$ >>
-      | <:ctyp< $tp1$ * $tp2$ >>
-      | <:ctyp< $tp1$; $tp2$ >>
-      | <:ctyp< $tp1$ -> $tp2$ >>
-      | <:ctyp< $tp1$ == $tp2$ >>
-      | <:ctyp< $tp1$ and $tp2$ >>
-      | <:ctyp< $tp1$ & $tp2$ >>
-      | <:ctyp< $tp1$, $tp2$ >>
-      | <:ctyp< [ < $tp1$ > $tp2$ ] >>
-      | <:ctyp< $tp1$ | $tp2$ >> -> loop tp1 || loop tp2
-      | <:ctyp< ( $tup:tp$ ) >> | <:ctyp< { $tp$ } >>
-      | <:ctyp< [ $tp$ ] >>
-      | <:ctyp< $_$ : $tp$ >>
-      | <:ctyp< ~ $_$ : $tp$ >>
-      | <:ctyp< ? $_$ : $tp$ >>
-      | <:ctyp< < $tp$; $..:_$ > >>
-      | <:ctyp< mutable $tp$ >>
-      | <:ctyp< $_$ of & $tp$ >>
-      | <:ctyp< $_$ of $tp$ >>
-      | <:ctyp< $tp$ as $_$ >>
-      | <:ctyp< [< $tp$ ] >> | <:ctyp< [> $tp$ ] >> | <:ctyp< [= $tp$ ] >>
-      | <:ctyp< ! $_$ . $tp$ >> -> loop tp
-      | <:ctyp< $lid:id$ >> -> id = type_name
-      | <:ctyp< $id:_$ >>
-      | <:ctyp< #$id:_$ >>
-      | <:ctyp< `$_$ >>
-      | <:ctyp< '$_$ >>
-      | <:ctyp< -'$_$ >>
-      | <:ctyp< +'$_$ >>
-      | <:ctyp< _ >>
-      | <:ctyp< >> -> false
-      | <:ctyp< (module $module_type$) >> -> loop_module_type module_type
-      | Ast.TyDcl _
-      | (IFDEF OCAML_4 THEN
-           Ast.TyAnt _
-           | Ast.TyTypePol _
-           | Ast.TyAnP _
-           | Ast.TyAnM _
-         ELSE
-           Ast.TyAnt _
-         ENDIF)
-       as tp -> bad_type tp
-    and loop_module_type = function
-      | <:module_type< $module_type$ with $with_constr$ >> ->
-          let rec loop_with_constr = function
-            | <:with_constr< type $_$ = $tp$ >>
-            | <:with_constr< type $_$ := $tp$ >> -> loop tp
-            | <:with_constr< $wc1$ and $wc2$ >> ->
-                loop_with_constr wc1 || loop_with_constr wc2
-            | <:with_constr< module $_$ = $_$ >>
-            | <:with_constr< module $_$ := $_$ >>
-            | <:with_constr< >> -> false
-            | Ast.WcAnt _ -> bad_type tp
-          in
-          loop_with_constr with_constr || loop_module_type module_type
-      | <:module_type< $id:_$ >>
-      | <:module_type< '$_$ >>
-      | <:module_type< >> -> false
-      | <:module_type< functor ($_$ : $_$) -> $_$ >>
-      | <:module_type< sig $_$ end >>
-      | <:module_type< module type of $_$ >>
-      | Ast.MtAnt _ -> bad_type tp
-    in
-    loop tp
+      | None -> super#ctyp ctyp
+      | Some false -> self
+      | Some true -> raise Stop
+  end
+  let type_is_recursive ?(short_circuit = fun _ -> None) type_name tp =
+    try ignore ((new type_is_recursive short_circuit type_name)#ctyp tp); false
+    with Stop -> true
 
   let drop_variance_annotations =
     (map_ctyp (function
       | <:ctyp@loc< +'$var$ >> | <:ctyp@loc< -'$var$ >> -> <:ctyp@loc< '$var$ >>
       | tp -> tp))#ctyp
-end
 
+  class vars_of = object
+    inherit fold as super
+    val vars = []
+    method vars = vars
+    method ident = function
+    | <:ident< $lid:v$ >> -> {< vars = v :: vars >}
+    | ident -> super#ident ident
+  end
+  let lids_of_patt patt =
+    ((new vars_of)#patt patt)#vars
+
+  class ignore_everything = object (self)
+    inherit map as super
+    method str_item str_item =
+      match super#str_item str_item with
+      | <:str_item@loc< value $rec:_$ $bindings$ >> as str_item -> (
+        match self#ignore_binding bindings with
+        | None ->
+          str_item
+        | Some more_bindings ->
+          <:str_item@loc<
+            $str_item$;
+            value $more_bindings$;
+          >>
+      )
+      | str_item -> str_item
+    method ignore_binding = function
+      | Ast.BiAnt _
+      | <:binding< >> -> None
+      | <:binding@loc< $b1$ and $b2$ >> -> (
+        match self#ignore_binding b1, self#ignore_binding b2 with
+        | b, None
+        | None, b -> b
+        | Some b1, Some b2 ->
+          Some <:binding@loc< $b1$ and $b2$ >>
+        )
+      | <:binding@loc< $patt$ = $_$ >> ->
+        match lids_of_patt patt with
+        | [] -> None
+        | h :: t ->
+          let mk_binding acc lid = <:binding@loc< $acc$ and _ = $lid:lid$ >> in
+          Some (List.fold_left mk_binding <:binding@loc< _ = $lid:h$ >> t)
+  end
+
+   let delay_sig_item sig_item =
+     Signature_stack.Item.delay_sig (Signature_stack.top ()) sig_item
+end
 
 (* Functions for interpreting derivation types *)
 
-let find_generator ~name haystack = (); fun entry (needle, arg) ->
-  let genf =
-    try Hashtbl.find haystack needle
+let find_generator ~name haystack = (); fun rec_ entry (needle,arg,gen_to_remove) ->
+  let seen = Hashtbl.create 0 in
+  let generators = ref [] in
+  (* enumerating the generators reachable from [needle] in no particular
+     order. If some generators depend on code generated by other generators,
+     we should probably change that and have a predictable order.
+     Set diff A \ B is implemented by marking all elements of B as seen
+     without adding them to [generators] and then visiting A. *)
+  let rec aux ~add = function
+    | [] -> ()
+    | needle :: rest ->
+      if Hashtbl.mem seen needle then aux ~add rest
+      else (
+        Hashtbl.add seen needle ();
+        match Hashtbl.find haystack needle with
+        | `Set set -> aux ~add (set @ rest)
+        | `Actual_generator g ->
+          if add then generators := g :: !generators;
+          aux ~add rest
+      ) in
+  let aux_with_error ~add needle =
+    try aux ~add [needle]
     with Not_found ->
+       (* the first lookup is the only one that can fail because we check
+          when we define sets that they only reference known generators *)
       let keys = Hashtbl.fold (fun key _ acc -> key :: acc) haystack [] in
       let gen_names = String.concat ", " keys in
       let msg =
@@ -361,44 +454,176 @@ let find_generator ~name haystack = (); fun entry (needle, arg) ->
           %S is not a supported %s generator. (supported generators: %s)"
           needle
           name
-          gen_names
-      in
-      failwith msg
-  in
-  genf arg entry
+          gen_names in
+      failwith msg in
+  List.iter (aux_with_error ~add:false) gen_to_remove;
+  aux_with_error ~add:true needle;
+
+  List.rev_map (fun genf ->
+    genf arg rec_ entry
+  ) !generators
 
 let generate = find_generator ~name:"type" generators
 
-let gen_derived_defs _loc tp drvs =
-  let coll drv der_sis = <:str_item< $der_sis$; $generate tp drv$ >> in
+let gen_derived_defs _loc rec_ tp drvs =
+  let coll drv der_sis = <:str_item< $der_sis$; $stSem_of_list (generate rec_ tp drv)$ >> in
   List.fold_right coll drvs <:str_item< >>
 
 let generate_exn = find_generator ~name:"exception" exn_generators
 
 let gen_derived_exn_defs _loc tp drvs =
-  let coll drv der_sis = <:str_item< $der_sis$; $generate_exn tp drv$ >> in
+  let coll drv der_sis = <:str_item< $der_sis$; $stSem_of_list (generate_exn false tp drv)$ >> in
   List.fold_right coll drvs <:str_item< >>
 
 let sig_generate = find_generator ~name:"signature" sig_generators
 
-let gen_derived_sigs _loc tp drvs =
-  let coll drv der_sis = <:sig_item< $der_sis$; $sig_generate tp drv$ >> in
+let gen_derived_sigs _loc rec_ tp drvs =
+  let coll drv der_sis = <:sig_item< $der_sis$; $sgSem_of_list (sig_generate rec_ tp drv)$ >> in
   List.fold_right coll drvs (SgNil _loc)
 
 let sig_exn_generate =
   find_generator ~name:"signature exception" sig_exn_generators
 
 let gen_derived_exn_sigs _loc tp drvs =
-  let coll drv der_sis = <:sig_item< $der_sis$; $sig_exn_generate tp drv$ >> in
+  let coll drv der_sis = <:sig_item< $der_sis$; $sgSem_of_list (sig_exn_generate false tp drv)$ >> in
   List.fold_right coll drvs (SgNil _loc)
 
 let remember_record_field_generators el drvs =
   let act drv =
     let gen = find_generator ~name:"record field" record_field_generators in
-    gen el drv
+    ignore (gen false el drv : unit list)
   in
   List.iter act drvs
 
+(* rewriting of non recursive type definition
+   [type nonrec t = t]
+   is rewritten
+   [include (struct
+      type fresh = t
+      type t = fresh
+    end : sig
+      type fresh = t
+      type t = fresh
+    end with type fresh := t
+   )]
+   This way, none of the intermediate types are exposed.
+*)
+
+module Rewrite_tds : sig
+  val sig_ : Ast.loc -> bool -> Ast.ctyp -> Ast.sig_item
+  val str_ : Ast.loc -> bool -> Ast.ctyp -> Ast.str_item
+end = struct
+  module StringSet = Set.Make(String)
+  module StringMap = Map.Make(String)
+
+  class bound_names = object
+    inherit fold as super
+    val bound_names = []
+    method bound_names = bound_names
+    method! ctyp = function
+      | Ast.TyDcl (_loc, n, _tpl, _tk, _cl) ->
+        {< bound_names = n :: bound_names >}
+      | ctyp ->
+        super#ctyp ctyp
+  end
+
+  let bound_names td =
+    ((new bound_names)#ctyp td)#bound_names
+
+  let rec match_type_constructor acc = function
+    | <:ctyp@_loc< $t1$ $t2$ >> ->
+      match_type_constructor ((t2,_loc) :: acc) t1
+    | <:ctyp@_loc< $lid:id$ >> ->
+      Some (id, _loc, acc)
+    | _ ->
+      None
+  let rebuild_type_constructor (id, _loc, params) =
+    List.fold_left (fun acc (param, _loc) ->
+      <:ctyp< $acc$ $param$ >>
+    ) <:ctyp< $lid:id$ >> params
+
+  class referenced_names used_bound bound = object (self)
+    inherit map as super
+    method! ctyp t =
+      match match_type_constructor [] t with
+      | Some (id, _loc, params) ->
+        let id =
+          try
+            let new_ = StringMap.find id bound in
+            used_bound := StringMap.add id (_loc, List.length params) !used_bound;
+            new_
+          with Not_found -> id in
+        let params = List.map (fun (param, _loc) -> (self#ctyp param, _loc)) params in
+        rebuild_type_constructor (id, _loc, params)
+      | None ->
+        super#ctyp t
+  end
+
+  let gen =
+    let r = ref (-1) in
+    fun () -> incr r; Printf.sprintf "__pa_nonrec_%d" !r
+
+  let referenced_names td =
+    let bound_names = bound_names td in
+    let bound_names_map =
+      List.fold_left (fun acc name -> StringMap.add name (gen ()) acc)
+        StringMap.empty bound_names in
+    let used_bound = ref StringMap.empty in
+    let td = (new referenced_names used_bound bound_names_map)#ctyp td in
+    let bound_names_map =
+      StringMap.fold (fun key v acc ->
+        try
+          let arity = StringMap.find key !used_bound in
+          StringMap.add key (v, arity) acc
+        with Not_found -> acc
+      ) bound_names_map StringMap.empty in
+    td, bound_names_map, used_bound
+
+  let params_of_arity (_loc, arity) =
+    Array.to_list (
+      Array.init arity (fun i ->
+        <:ctyp< '$lid:sprintf "a%d" i$ >>
+      )
+    )
+  let constructor_of_arity t (_loc, arity) =
+    let args = List.map (fun param -> (param, _loc)) (params_of_arity (_loc, arity)) in
+    rebuild_type_constructor (t, _loc, args)
+
+  let build_common _loc td =
+    let td2, map, _set = referenced_names td in
+    StringMap.fold (fun k (v, arity) acc ->
+      let tydcl =
+        TyDcl (_loc, v, params_of_arity arity, constructor_of_arity k arity, [])
+      in
+      let new_constraints =
+        <:with_constr< type $constructor_of_arity v arity$ := $constructor_of_arity k arity$ >>
+      in
+      match acc with
+      | None ->
+        Some (tydcl, td2, new_constraints)
+      | Some (td1, td2, constraints) ->
+        let td1 = <:ctyp< $td1$ and $tydcl$ >> in
+        let constraints = <:with_constr< $constraints$ and $new_constraints$ >> in
+        Some (td1, td2, constraints))
+    map None
+
+  let str_ _loc rec_ td =
+    if rec_ then <:str_item< type $td$ >> else
+    match build_common _loc td with
+    | None -> <:str_item< type $td$ >>
+    | Some (td1, td2, constraints) ->
+      <:str_item< include (struct type $td1$; type $td2$; end : sig
+        type $td1$; type $td2$;
+      end with $constraints$) >>
+
+  let sig_ _loc rec_ td =
+    if rec_ then <:sig_item< type $td$ >> else
+    match build_common _loc td with
+    | None -> <:sig_item< type $td$ >>
+    | Some (td1, td2, constraints) ->
+      <:sig_item< include (sig type $td1$; type $td2$;
+      end with $constraints$) >>
+end
 
 (* Syntax extension *)
 
@@ -447,6 +672,15 @@ let rec fetch_generator_arg paren_count strm =
       Loc.raise (Gram.token_location token_info) (Stream.Error "')' missing")
   | x -> x :: fetch_generator_arg paren_count strm
 
+let rec_ =
+  Gram.Entry.of_parser "nonrec" (fun strm ->
+    match Stream.peek strm with
+    | Some (LIDENT "nonrec", _) ->
+      Stream.junk strm;
+      false
+    | _ ->
+      true)
+
 let generator_arg =
   Gram.Entry.of_parser "generator_arg" (fun strm ->
     match Stream.peek strm with
@@ -473,10 +707,15 @@ let rec types_used_by_type_conv = function
     >>
   | _ -> assert false
 
+let quotation_str_item = Gram.Entry.mk "quotation_str_item";;
+
 DELETE_RULE Gram str_item: "module"; a_UIDENT; module_binding0 END;
+DELETE_RULE Gram str_item: "type"; type_declaration END;
+DELETE_RULE Gram sig_item: "type"; type_declaration END;
+DELETE_RULE Gram module_type: "sig"; sig_items; "end" END;
 
 EXTEND Gram
-  GLOBAL: str_item sig_item label_declaration;
+  GLOBAL: quotation_str_item str_item sig_item label_declaration module_type;
 
   str_item:
     [[
@@ -485,25 +724,42 @@ EXTEND Gram
         <:str_item< >>
     ]];
 
-  generator: [[ id = LIDENT; arg = generator_arg -> (id, arg) ]];
+  generator: [[
+    (* disallowing arguments when subtracting because the meaning of things like
+       [type t with typehash(something) - typehash(somethingelse)] is unclear *)
+    [ id = LIDENT; l = LIST1 [ "-"; x = LIDENT -> x ] -> (id, None, l)
+    | id = LIDENT; arg = generator_arg -> (id, arg, []) ]
+  ]];
+
+  quotation_str_item: [[
+    [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
+        let str_item = gen_derived_defs _loc rec_ tds drvs in
+        (new Gen.ignore_everything)#str_item str_item
+  ]]];
 
   str_item:
     [[
-      "type"; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
+    [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
+        let str_item = gen_derived_defs _loc rec_ tds drvs in
+        let str_item = (new Gen.ignore_everything)#str_item str_item in
         <:str_item<
-          type $tds$;
+          $Rewrite_tds.str_ _loc rec_ tds$;
           $types_used_by_type_conv tds$;
-          $gen_derived_defs _loc tds drvs$
+          $str_item$
         >>
-    ]];
+    | "type"; rec_ = rec_; tds = type_declaration ->
+        Rewrite_tds.str_ _loc rec_ tds
+    ]]];
 
   str_item:
     [[
       "exception"; tds = constructor_declaration; "with";
       drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
-        <:str_item< exception $tds$; $gen_derived_exn_defs _loc tds drvs$ >>
+        let str_item = gen_derived_exn_defs _loc tds drvs in
+        let str_item = (new Gen.ignore_everything)#str_item str_item in
+        <:str_item< exception $tds$; $str_item$ >>
     ]];
 
   str_item:
@@ -513,12 +769,25 @@ EXTEND Gram
         <:str_item< module $i$ = $mb$ >>
     ]];
 
+  start_of_sig:
+    [[ "sig" -> Signature_stack.push () ]];
+
+  module_type:
+    [[
+      start_of_sig; sg = sig_items; "end" ->
+      match Signature_stack.Item.delayed_sigs (Signature_stack.pop ()) with
+      | [] -> <:module_type< sig $sg$ end >>
+      | delayed_sigs -> <:module_type< sig $sg$; $list:delayed_sigs$ end >>
+    ]];
+
   sig_item:
     [[
-      "type"; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
+    [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
-        <:sig_item< type $tds$; $gen_derived_sigs _loc tds drvs$ >>
-    ]];
+        <:sig_item< $Rewrite_tds.sig_ _loc rec_ tds$; $gen_derived_sigs _loc rec_ tds drvs$ >>
+    | "type"; rec_ = rec_; tds = type_declaration ->
+        Rewrite_tds.sig_ _loc rec_ tds
+    ]]];
 
   sig_item:
     [[
@@ -529,27 +798,51 @@ EXTEND Gram
     ]];
 
   label_declaration:
-    [[
-      name = a_LIDENT; ":"; tp = poly_type;
-      "with"; drvs = LIST1 generator SEP "," ->
-        remember_record_field_generators _loc drvs;
-        <:ctyp< $lid:name$ : $tp$ >>
+    [[ name = a_LIDENT; ":"; tp = poly_type;
+       "with"; drvs = LIST1 generator SEP "," ->
+       let label_tp = Ast.TyLab (_loc, name, tp) in
+       remember_record_field_generators label_tp drvs;
+       <:ctyp< $lid:name$ : $tp$ >>
     | "mutable"; name = a_LIDENT; ":"; tp = poly_type;
       "with"; drvs = LIST1 generator SEP "," ->
-        remember_record_field_generators _loc drvs;
+       let label_tp = Ast.TyMut (_loc, Ast.TyLab (_loc, name, tp)) in
+        remember_record_field_generators label_tp drvs;
         <:ctyp< $lid:name$ : mutable $tp$ >>
     ]];
 END
+
+let type_conv_quotation loc _loc_name_opt cnt_str =
+  set_conv_path_if_not_set loc;
+  let str_item = Gram.parse_string quotation_str_item loc cnt_str in
+  <:module_expr@loc< struct $str_item$ end >>
+
+let () =
+  Quotation.add "type_conv" Quotation.DynAst.module_expr_tag type_conv_quotation
 
 (* Record field defaults *)
 
 (* Add "default" to set of record field generators *)
 let () =
   add_record_field_generator_with_arg "default" Syntax.expr
-    (fun expr_opt loc ->
+    (fun expr_opt tp ->
+      let loc = Ast.loc_of_ctyp tp in
       let default =
         match expr_opt with
         | Some expr -> expr
         | None -> Loc.raise loc (Failure "could not parse default expression")
       in
+      if Hashtbl.mem Gen.record_defaults loc then
+        Loc.raise loc (Failure "several default expressions are given");
       Hashtbl.replace Gen.record_defaults loc default)
+
+let () =
+  (* above, the parser used 'sig' and 'end' as anchors but an mli is a signature
+     without the sig and end. So here we catch all the elements that have been inserted
+     at toplevel in the mli *)
+  let _, current_sig_parser = Register.current_parser () in
+  Register.register_sig_item_parser (fun ?directive_handler _loc stream ->
+    let mli = current_sig_parser ?directive_handler _loc stream in
+    match Signature_stack.Item.delayed_sigs Signature_stack.bottom with
+    | [] -> mli
+    | sig_items -> <:sig_item< $list: mli :: sig_items$ >>
+  );

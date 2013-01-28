@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 41f2bc0e8ad6e247833a067c39c2010e)
+# DO NOT EDIT (digest: e2189dc11c7e2e7b4d930108fc677db5)
 # Ignore VCS directories, you can use the same kind of rule outside 
 # OASIS_START/STOP if you want to exclude directories that contains 
 # useless stuff for the build process
@@ -17,6 +17,5 @@
 "lib/pa_type_conv.cmxs": use_pa_type_conv
 <lib/*.ml{,i}>: pkg_camlp4.quotations
 <lib/*.ml{,i}>: pkg_camlp4.extend
-<lib/*.ml{,i}>: pkg_camlp4.macro
 # OASIS_STOP
-<lib/pa_type_conv.ml>: syntax_camlp4o, pkg_camlp4.macro
+<lib/pa_type_conv.ml>: syntax_camlp4o
