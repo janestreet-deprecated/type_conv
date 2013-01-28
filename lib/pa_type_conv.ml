@@ -15,15 +15,20 @@ let get_loc_err loc msg =
     (Loc.stop_off loc - Loc.stop_bol loc)
     msg
 
-(* To be deleted once the OCaml team fixes Mantis issue #4751. *)
-let hash_variant str =
-  let acc_ref = ref 0 in
-  for i = 0 to String.length str - 1 do
-    acc_ref := 223 * !acc_ref + Char.code str.[i]
+(* To be deleted once the OCaml team fixes Mantis issue #4751.
+   This function is copied from the compiler, function hash_variant
+   in typing/btype.ml. *)
+let hash_variant s =
+  let accu = ref 0 in
+  for i = 0 to String.length s - 1 do
+    accu := 223 * !accu + Char.code s.[i]
   done;
-  if Sys.word_size = 32 then !acc_ref
-  else !acc_ref land int_of_string "0x7FFFFFFF"
+  (* reduce to 31 bits *)
+  accu := !accu land (1 lsl 31 - 1);
+  (* make it signed for 64 bits architectures *)
+  if !accu > 0x3FFFFFFF then !accu - (1 lsl 31) else !accu
 
+let () = assert (Obj.magic `Latency_stats = hash_variant "Latency_stats")
 
 (* Module/File path management *)
 
@@ -160,10 +165,10 @@ let rm_generator ?(is_exn = false) id =
 let add_sig_generator_with_arg ?(delayed = false) ?(is_exn = false) id entry e =
   let e =
     if not delayed then e
-    else fun arg _rec tds ->
+    else fun arg rec_ tds ->
       Signature_stack.Item.delay_sig
         (Signature_stack.top ())
-        (e arg _rec tds);
+        (e arg rec_ tds);
       Ast.SgNil Loc.ghost
   in
   let gens = if is_exn then sig_exn_generators else sig_generators in
@@ -352,18 +357,22 @@ module Gen = struct
     | tp -> error tp ~fn:"get_tparam_id" ~msg:"not a type parameter"
 
   exception Stop
-  class type_is_recursive short_circuit type_name = object (self)
+  let type_is_recursive short_circuit type_name = object (self)
     inherit fold as super
-    method ctyp = function
-    | <:ctyp< $lid:id$ >> -> if id = type_name then raise Stop else self
-    | ctyp ->
+    method ctyp ctyp =
       match short_circuit ctyp with
-      | None -> super#ctyp ctyp
       | Some false -> self
       | Some true -> raise Stop
+      | None ->
+        match ctyp with
+        | <:ctyp< $_$ : $ctyp$ >> ->
+          (* or else we would say that [type t = { t : int }] is recursive *)
+          self#ctyp ctyp
+        | <:ctyp< $lid:id$ >> -> if id = type_name then raise Stop else self
+        | ctyp -> super#ctyp ctyp
   end
   let type_is_recursive ?(short_circuit = fun _ -> None) type_name tp =
-    try ignore ((new type_is_recursive short_circuit type_name)#ctyp tp); false
+    try ignore ((type_is_recursive short_circuit type_name)#ctyp tp); false
     with Stop -> true
 
   let drop_variance_annotations =
@@ -371,19 +380,22 @@ module Gen = struct
       | <:ctyp@loc< +'$var$ >> | <:ctyp@loc< -'$var$ >> -> <:ctyp@loc< '$var$ >>
       | tp -> tp))#ctyp
 
-  class vars_of = object (self)
+  let vars_of = object (self)
     inherit fold as super
     val vars = []
     method vars = vars
     method! ctyp _ = self
-    method ident = function
+    method! ident = function
     | <:ident< $lid:v$ >> -> {< vars = v :: vars >}
     | ident -> super#ident ident
+    method! patt = function
+    | <:patt< $_$ = $p$ >> -> self#patt p
+    | p -> super#patt p
   end
   let lids_of_patt patt =
-    ((new vars_of)#patt patt)#vars
+    (vars_of#patt patt)#vars
 
-  class ignore_everything = object (self)
+  let ignore_everything = object (self)
     inherit map as super
     method str_item str_item =
       match super#str_item str_item with
@@ -517,7 +529,7 @@ end = struct
   module StringSet = Set.Make(String)
   module StringMap = Map.Make(String)
 
-  class bound_names = object
+  let bound_names = object
     inherit fold as super
     val bound_names = []
     method bound_names = bound_names
@@ -529,7 +541,7 @@ end = struct
   end
 
   let bound_names td =
-    ((new bound_names)#ctyp td)#bound_names
+    (bound_names#ctyp td)#bound_names
 
   let rec match_type_constructor acc = function
     | <:ctyp@_loc< $t1$ $t2$ >> ->
@@ -543,7 +555,7 @@ end = struct
       <:ctyp< $acc$ $param$ >>
     ) <:ctyp< $lid:id$ >> params
 
-  class referenced_names used_bound bound = object (self)
+  let referenced_names used_bound bound = object (self)
     inherit map as super
     method! ctyp t =
       match match_type_constructor [] t with
@@ -570,7 +582,7 @@ end = struct
       List.fold_left (fun acc name -> StringMap.add name (gen ()) acc)
         StringMap.empty bound_names in
     let used_bound = ref StringMap.empty in
-    let td = (new referenced_names used_bound bound_names_map)#ctyp td in
+    let td = (referenced_names used_bound bound_names_map)#ctyp td in
     let bound_names_map =
       StringMap.fold (fun key v acc ->
         try
@@ -691,12 +703,9 @@ let generator_arg =
     | _ -> None)
 
 let mk_ctyp _loc name params =
-  let rec loop acc = function
-    | [] -> acc
-    | x :: xs ->
-      loop (Ast.TyApp (_loc, acc, Gen.drop_variance_annotations x)) xs
-  in
-  loop <:ctyp< $lid:name$ >> params
+  List.fold_left (fun acc x ->
+    Ast.TyApp (_loc, acc, Gen.drop_variance_annotations x)
+  ) <:ctyp< $lid:name$ >> params
 
 let rec types_used_by_type_conv = function
   | Ast.TyDcl (_loc, name, tps, _rhs, _cl) ->
@@ -735,7 +744,7 @@ EXTEND Gram
   quotation_str_item: [[
     [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         let str_item = gen_derived_defs _loc rec_ tds drvs in
-        (new Gen.ignore_everything)#str_item str_item
+        Gen.ignore_everything#str_item str_item
   ]]];
 
   str_item:
@@ -743,7 +752,7 @@ EXTEND Gram
     [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
         let str_item = gen_derived_defs _loc rec_ tds drvs in
-        let str_item = (new Gen.ignore_everything)#str_item str_item in
+        let str_item = Gen.ignore_everything#str_item str_item in
         <:str_item<
           $Rewrite_tds.str_ _loc rec_ tds$;
           $types_used_by_type_conv tds$;
@@ -759,7 +768,7 @@ EXTEND Gram
       drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
         let str_item = gen_derived_exn_defs _loc tds drvs in
-        let str_item = (new Gen.ignore_everything)#str_item str_item in
+        let str_item = Gen.ignore_everything#str_item str_item in
         <:str_item< exception $tds$; $str_item$ >>
     ]];
 
@@ -818,6 +827,7 @@ let type_conv_quotation loc _loc_name_opt cnt_str =
   <:module_expr@loc< struct $str_item$ end >>
 
 let () =
+  (* <:type_conv< type t = ... >> outputs the generated code but discards the type definition *)
   Quotation.add "type_conv" Quotation.DynAst.module_expr_tag type_conv_quotation
 
 (* Record field defaults *)
