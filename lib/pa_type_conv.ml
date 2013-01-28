@@ -558,18 +558,22 @@ end = struct
   let referenced_names used_bound bound = object (self)
     inherit map as super
     method! ctyp t =
-      match match_type_constructor [] t with
-      | Some (id, _loc, params) ->
-        let id =
-          try
-            let new_ = StringMap.find id bound in
-            used_bound := StringMap.add id (_loc, List.length params) !used_bound;
-            new_
-          with Not_found -> id in
-        let params = List.map (fun (param, _loc) -> (self#ctyp param, _loc)) params in
-        rebuild_type_constructor (id, _loc, params)
-      | None ->
-        super#ctyp t
+      match t with
+      | <:ctyp@loc< $lhs$ : $rhs$ >> ->
+        <:ctyp@loc< $lhs$ : $self#ctyp rhs$ >>
+      | _ ->
+        match match_type_constructor [] t with
+        | Some (id, _loc, params) ->
+          let id =
+            try
+              let new_ = StringMap.find id bound in
+              used_bound := StringMap.add id (_loc, List.length params) !used_bound;
+              new_
+            with Not_found -> id in
+          let params = List.map (fun (param, _loc) -> (self#ctyp param, _loc)) params in
+          rebuild_type_constructor (id, _loc, params)
+        | None ->
+          super#ctyp t
   end
 
   let gen =
