@@ -371,10 +371,11 @@ module Gen = struct
       | <:ctyp@loc< +'$var$ >> | <:ctyp@loc< -'$var$ >> -> <:ctyp@loc< '$var$ >>
       | tp -> tp))#ctyp
 
-  class vars_of = object
+  class vars_of = object (self)
     inherit fold as super
     val vars = []
     method vars = vars
+    method! ctyp _ = self
     method ident = function
     | <:ident< $lid:v$ >> -> {< vars = v :: vars >}
     | ident -> super#ident ident
