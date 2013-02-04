@@ -40,4 +40,5 @@ contact the maintainers:
   * Jane Street Capital, LLC <opensource@janestreet.com>
 
 Up-to-date information should be available at:
-<https://bitbucket.org/yminsky/ocaml-core>
+* <https://github.com/janestreet/type_conv>
+* <https://bitbucket.org/janestreet/type_conv>

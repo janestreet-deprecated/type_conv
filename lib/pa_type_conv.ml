@@ -679,15 +679,19 @@ let found_module_name =
         name
     | _ -> raise Stream.Failure)
 
-let rec fetch_generator_arg paren_count strm =
-  match Stream.next strm with
-  | KEYWORD "(", _ -> fetch_generator_arg (paren_count + 1) strm
-  | KEYWORD ")", token_info ->
-      if paren_count = 1 then [(EOI, token_info)]
-      else fetch_generator_arg (paren_count - 1) strm
-  | EOI, token_info ->
-      Loc.raise (Gram.token_location token_info) (Stream.Error "')' missing")
-  | x -> x :: fetch_generator_arg paren_count strm
+let rec fetch_generator_arg paren_count acc strm =
+  let token, token_info as elt = Stream.next strm in
+  match token with
+  | KEYWORD "(" ->
+    fetch_generator_arg (paren_count + 1) (elt :: acc) strm
+  | KEYWORD ")" when paren_count = 1 ->
+    (EOI, token_info) :: acc
+  | KEYWORD ")" ->
+    fetch_generator_arg (paren_count - 1) (elt :: acc) strm
+  | EOI ->
+    Loc.raise (Gram.token_location token_info) (Stream.Error "')' missing")
+  | _ ->
+    fetch_generator_arg paren_count (elt :: acc) strm
 
 let rec_ =
   Gram.Entry.of_parser "nonrec" (fun strm ->
@@ -703,7 +707,7 @@ let generator_arg =
     match Stream.peek strm with
     | Some (KEYWORD "(", _) ->
         Stream.junk strm;
-        Some (fetch_generator_arg 1 strm)
+        Some (List.rev (fetch_generator_arg 1 [] strm))
     | _ -> None)
 
 let mk_ctyp _loc name params =
