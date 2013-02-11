@@ -6,6 +6,17 @@ open Camlp4
 open PreCast
 open Ast
 
+let parsing_mli = ref false
+let with_parsing_mli b f =
+  let old = !parsing_mli in
+  parsing_mli := b;
+  try let v = f () in
+      parsing_mli := old;
+      v
+  with e ->
+    parsing_mli := old;
+    raise e
+
 (* Utility functions *)
 
 let get_loc_err loc msg =
@@ -371,7 +382,16 @@ module Gen = struct
         | <:ctyp< $lid:id$ >> -> if id = type_name then raise Stop else self
         | ctyp -> super#ctyp ctyp
   end
-  let type_is_recursive ?(short_circuit = fun _ -> None) type_name tp =
+  let type_is_recursive ?(stop_on_functions = true) ?(short_circuit = fun _ -> None) type_name tp =
+    let short_circuit =
+      if stop_on_functions then
+        function
+        | <:ctyp< ( ~ $_$ : $_$ ) -> $_$ >>
+        | <:ctyp< ( ? $_$ : $_$ ) -> $_$ >>
+        | <:ctyp< $_$ -> $_$ >> -> Some false
+        | ctyp -> short_circuit ctyp
+      else short_circuit
+    in
     try ignore ((type_is_recursive short_circuit type_name)#ctyp tp); false
     with Stop -> true
 
@@ -397,6 +417,11 @@ module Gen = struct
 
   let ignore_everything = object (self)
     inherit map as super
+    method sig_item sig_item =
+      match super#sig_item sig_item with
+      | <:sig_item@loc< value $id$ : $_$ >> as sig_item when not !parsing_mli ->
+        <:sig_item@loc< $sig_item$; value $id$ : _no_unused_value_warning_ >>
+      | sig_item -> sig_item
     method str_item str_item =
       match super#str_item str_item with
       | <:str_item@loc< value $rec:_$ $bindings$ >> as str_item -> (
@@ -795,14 +820,18 @@ EXTEND Gram
       start_of_sig; sg = sig_items; "end" ->
       match Signature_stack.Item.delayed_sigs (Signature_stack.pop ()) with
       | [] -> <:module_type< sig $sg$ end >>
-      | delayed_sigs -> <:module_type< sig $sg$; $list:delayed_sigs$ end >>
+      | delayed_sigs ->
+        let delayed_sigs = List.map Gen.ignore_everything#sig_item delayed_sigs in
+        <:module_type< sig $sg$; $list:delayed_sigs$ end >>
     ]];
 
   sig_item:
     [[
     [ "type"; rec_ = rec_; tds = type_declaration; "with"; drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
-        <:sig_item< $Rewrite_tds.sig_ _loc rec_ tds$; $gen_derived_sigs _loc rec_ tds drvs$ >>
+        let sig_item = gen_derived_sigs _loc rec_ tds drvs in
+        let sig_item = Gen.ignore_everything#sig_item sig_item in
+        <:sig_item< $Rewrite_tds.sig_ _loc rec_ tds$; $sig_item$ >>
     | "type"; rec_ = rec_; tds = type_declaration ->
         Rewrite_tds.sig_ _loc rec_ tds
     ]]];
@@ -812,7 +841,9 @@ EXTEND Gram
       "exception"; cd = constructor_declaration; "with";
       drvs = LIST1 generator SEP "," ->
         set_conv_path_if_not_set _loc;
-        <:sig_item< exception $cd$; $gen_derived_exn_sigs _loc cd drvs$ >>
+        let sig_item = gen_derived_exn_sigs _loc cd drvs in
+        let sig_item = Gen.ignore_everything#sig_item sig_item in
+        <:sig_item< exception $cd$; $sig_item$ >>
     ]];
 
   label_declaration:
@@ -854,14 +885,154 @@ let () =
         Loc.raise loc (Failure "several default expressions are given");
       Hashtbl.replace Gen.record_defaults loc default)
 
+(* Removal of warnings (in signatures).
+   Because ocaml gives warnings but doesn't give a way to deactivate them, we have
+   plenty in the generated code. The most annoyings ones are the ones in signatures,
+   because they are harder to remove.
+   For instance:
+     module M : sig type t = [ `A ] with sexp end = ...
+   is likely to generate a warning 'unused value t_of_sexp__' in the signature (the same
+   warning in an implementation would be already removed).
+   To work around that, for every 'val name : type' auto generated, we insert a
+   'val name : _no_unused_value_warning_' next to it.
+   And in a second step (could probably be done in one step, but it would be complicated),
+   we try to generate an expression that will use these name (which we recognize thanks to
+   the '_no_unused_value_warning_' mark).
+   To use a 'val name : type' in a context like:
+     module M : sig val name : type end = ...
+   you simply need to do:
+     let _ = M.name
+   And there are other tricks depending on where the signature item appear. The removal of
+   warning doesn't handle all possible ways of generating warnings. *)
+
+let qualify_idents loc m idents =
+  List.map (fun i -> <:ident@loc< $uid:m$.$i$ >>) idents
+let use_idents loc idents =
+  List.fold_left
+    (fun acc i -> <:str_item@loc< $acc$; value _ = $id:i$; >>)
+    <:str_item@loc< >> idents
+
+let ignore = object (self)
+  inherit Ast.map as super
+  method str_item str_item =
+    match str_item with
+    | <:str_item@loc< module type $s$ = $module_type$ >> ->
+      let idents, module_type = self#ignore_module_type module_type in
+      let warnings_removal = use_idents loc (qualify_idents loc s idents) in
+      if idents = []
+      then <:str_item@loc< module type $s$ = $module_type$; >>
+      else <:str_item@loc<
+        module type $s$ = $module_type$;
+        value () = if True then () else begin
+          let module M($s$ : $uid:s$) = struct
+            $warnings_removal$;
+          end in
+          ()
+        end;
+      >>
+
+    | <:str_item@loc< module $uid:m$ : $module_type$ = $module_expr$ >> ->
+      let module_expr = self#module_expr module_expr in
+      let idents, module_type = self#ignore_module_type module_type in
+      let warnings_removal = use_idents loc (qualify_idents loc m idents) in
+      <:str_item@loc< module $uid:m$ : $module_type$ = $module_expr$; $warnings_removal$ >>
+
+    | StMod _
+    | StSem _
+    | StInc _
+    | StNil _
+    | StCls _
+    | StClt _
+    | StDir _
+    | StExc _
+    | StExp _
+    | StExt _
+    | StRecMod _
+    | StOpn _
+    | StTyp _
+    | StVal _
+    | StAnt _ as str_item ->
+      super#str_item str_item
+
+  method module_expr = function
+    | MeFun (loc, s, mt, me) ->
+      let idents, mt = self#ignore_module_type mt in
+      let warnings_removal = use_idents loc (qualify_idents loc s idents) in
+      let me = self#module_expr me in
+      let me =
+        match me with
+        | MeStr (loc, str_item) ->
+          MeStr (loc, <:str_item@loc< $warnings_removal$; $str_item$ >>)
+        | MeTyc (loc, MeStr (loc2, str_item), mt) ->
+          MeTyc (loc, MeStr (loc2, <:str_item@loc2< $warnings_removal$; $str_item$ >>), mt)
+        | _ ->
+          (* not ignoring the warnings in this case because we don't even know if $me$ is
+             a functor or not, which makes it impossible to find a way of inserting
+             $warnings_removal$ *)
+          me in
+      MeFun (loc, s, mt, me)
+
+    | MeStr _
+    | MeTyc _
+    | MeNil _
+    | MeId _
+    | MePkg _
+    | MeAnt _
+    | MeApp _ as me ->
+      super#module_expr me
+
+  (* Strip all the 'markers' that have not been handled *)
+  method sig_item = function
+    | <:sig_item@loc< value $_$ : _no_unused_value_warning_ >> -> <:sig_item@loc< >>
+    | sig_item -> super#sig_item sig_item
+
+  method ignore_module_type = function
+    | MtNil _
+    | MtId _
+    | MtFun _
+    | MtQuo _
+    | MtOf _
+    | MtAnt _ as mt ->
+      [], self#module_type mt
+    | MtSig (loc, sig_item) ->
+      let idents, sig_item = self#ignore_sig_item sig_item in
+      idents, MtSig (loc, sig_item)
+    | MtWit (loc, module_type, with_constr) ->
+      let idents, module_type = self#ignore_module_type module_type in
+      idents, MtWit (loc, module_type, with_constr)
+
+  method ignore_sig_item sig_item =
+    self#ignore_sig_item_aux [] sig_item
+  method ignore_sig_item_aux acc = function
+    | <:sig_item@loc< value $id$ : _no_unused_value_warning_ >> ->
+      <:ident@loc< $lid:id$ >> :: acc, <:sig_item@loc< >>
+    | <:sig_item@loc< module $uid:m$ : $module_type$ >> ->
+      let new_idents, module_type = self#ignore_module_type module_type in
+      acc @ qualify_idents loc m new_idents, <:sig_item@loc< module $uid:m$ : $module_type$ >>
+    | <:sig_item@loc< $si1$; $si2$ >> ->
+      let acc, si1 = self#ignore_sig_item_aux acc si1 in
+      let acc, si2 = self#ignore_sig_item_aux acc si2 in
+      acc, <:sig_item@loc< $si1$; $si2$ >>
+    | sig_item -> acc, self#sig_item sig_item
+end
+
 let () =
   (* above, the parser used 'sig' and 'end' as anchors but an mli is a signature
      without the sig and end. So here we catch all the elements that have been inserted
      at toplevel in the mli *)
-  let _, current_sig_parser = Register.current_parser () in
+  let current_str_parser, current_sig_parser = Register.current_parser () in
   Register.register_sig_item_parser (fun ?directive_handler _loc stream ->
-    let mli = current_sig_parser ?directive_handler _loc stream in
-    match Signature_stack.Item.delayed_sigs Signature_stack.bottom with
-    | [] -> mli
-    | sig_items -> <:sig_item< $list: mli :: sig_items$ >>
+    with_parsing_mli true (fun () ->
+      let mli = current_sig_parser ?directive_handler _loc stream in
+      match Signature_stack.Item.delayed_sigs Signature_stack.bottom with
+      | [] -> mli
+      | sig_items -> <:sig_item< $list: mli :: sig_items$ >>
+    )
   );
+  Register.register_str_item_parser (fun ?directive_handler _loc stream ->
+    with_parsing_mli false (fun () ->
+      let ml = current_str_parser ?directive_handler _loc stream in
+      ignore#str_item ml
+    )
+  )
+

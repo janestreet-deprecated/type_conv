@@ -209,6 +209,7 @@ module Gen : sig
       [tp] if it is a type parameter.  @raise Failure otherwise. *)
 
   val type_is_recursive :
+    ?stop_on_functions:bool ->
     ?short_circuit:(ctyp -> bool option) ->
     string -> ctyp -> bool
   (** [type_is_recursive ?short_circuit id tp]
@@ -217,7 +218,10 @@ module Gen : sig
       another type.
 
       @param short_circuit allows you to override the search for certain
-      type expressions. *)
+      type expressions.
+      @param stop_on_functions allows to disregard the recursive occurences appearing in
+      arrow types. The default is to disregard them.
+  *)
 
   val drop_variance_annotations : ctyp -> ctyp
   (** [drop_variance_annotations tp] @return the type resulting from dropping
