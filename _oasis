@@ -20,7 +20,6 @@ Library pa_type_conv
   FindlibName:        type_conv
   Modules:            Pa_type_conv
   BuildDepends:       camlp4.quotations, camlp4.extend
-  CompiledObject:     byte
   XMETAType:          syntax
   XMETARequires:      camlp4
   XMETADescription:   Syntax extension for type_conv
