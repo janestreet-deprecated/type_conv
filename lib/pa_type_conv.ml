@@ -547,6 +547,24 @@ let remember_record_field_generators el drvs =
    This way, none of the intermediate types are exposed.
 *)
 
+(*  Note that type definitions like
+
+       type nonrec t = t = {foo:int}
+
+   won't work. You might think that it could be rewritten as:
+
+       include (struct
+         type fresh = t = {foo:int}
+         type t = fresh = {foo:int}
+       end : sig
+         type fresh = t = {foo:int}
+         type t = fresh = {foo:int}
+       end with type fresh := t)
+
+    but the compiler complains on fresh := t, and fresh := t = {foo:int} is not valid
+    syntax.
+*)
+
 module Rewrite_tds : sig
   val sig_ : Ast.loc -> bool -> Ast.ctyp -> Ast.sig_item
   val str_ : Ast.loc -> bool -> Ast.ctyp -> Ast.str_item
@@ -1035,4 +1053,3 @@ let () =
       ignore#str_item ml
     )
   )
-
