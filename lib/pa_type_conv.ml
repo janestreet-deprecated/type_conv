@@ -419,8 +419,8 @@ module Gen = struct
     inherit map as super
     method sig_item sig_item =
       match super#sig_item sig_item with
-      | <:sig_item@loc< value $id$ : $_$ >> as sig_item when not !parsing_mli ->
-        <:sig_item@loc< $sig_item$; value $id$ : _no_unused_value_warning_ >>
+      | <:sig_item@loc< value $id$ : $ctyp$ >> when not !parsing_mli ->
+        <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$ >>
       | sig_item -> sig_item
     method str_item str_item =
       match super#str_item str_item with
@@ -864,6 +864,32 @@ EXTEND Gram
         <:sig_item< exception $cd$; $sig_item$ >>
     ]];
 
+  (* CR-someday vgatien-baron: and by someday I mean when we switch to ppx rewriters
+     There are several problems with field generators:
+     1. using positions as keys is not awesome. If there are several labels at the same
+        position then it is going to behave weirdly. It is not really expected because
+        we can't generate ast containing a 'with defaut(...)' for instance, but when we
+        switch to ppx it will be possible and then positions could be arbitrarily bad.
+     2. The hashtbl is not cleaned, which means that, in combination with 1., there can
+        be other weird behaviours. For instance:
+        $ ocaml-latest
+        # open Core.Std;;
+        # type t = { a : int with default(1) };;
+        type t = { a : int; }
+        # type t = { a : int with default(1) };;
+        Error: Failure: "several default expressions are given"
+     3. There is no warning when field generators are not used.
+
+     When we swich to ppx rewriters, we could solve the problem like so:
+     1. and 2. don't use positions and don't use a hashtbl either
+       [with default(...)] will be replaced by an extension point [@default ...]
+       so sexplib etc. can simply look in the ast instead of in the hashtbl
+     3. we can provide a function in a lib for the syntax extensions that takes an ast and
+        and and extension name and puts a mark in the ast that says that name was used
+        (for instance [lookup t "default"] puts [@default_was_used] on [t]) and then a ppx
+        rewriter at the very end would complain about all unused extensions. To deal with
+        extension points that are allowed not to be used (?), presumably the ppx extension
+        could be parameterized on a set of symbols that it should not complain about? *)
   label_declaration:
     [[ name = a_LIDENT; ":"; tp = poly_type;
        "with"; drvs = LIST1 generator SEP "," ->
@@ -923,17 +949,32 @@ let () =
    And there are other tricks depending on where the signature item appear. The removal of
    warning doesn't handle all possible ways of generating warnings. *)
 
+module String_set = Set.Make(String)
+
 let qualify_idents loc m idents =
   List.map (fun i -> <:ident@loc< $uid:m$.$i$ >>) idents
 let use_idents loc idents =
   List.fold_left
     (fun acc i -> <:str_item@loc< $acc$; value _ = $id:i$; >>)
     <:str_item@loc< >> idents
+let use_idents_in loc idents body =
+  List.fold_left
+    (fun acc i -> <:expr@loc< let _ = $id:i$ in $acc$ >>)
+    body idents
 
 let ignore = object (self)
   inherit Ast.map as super
-  method str_item str_item =
-    match str_item with
+
+  method expr = function
+    | <:expr@loc< let module $uid:m$ : $module_type$ = $module_expr$ in $body$ >> ->
+      let module_expr = self#module_expr module_expr in
+      let idents, module_type = self#ignore_module_type module_type in
+      let body = self#expr body in
+      let body = use_idents_in loc (qualify_idents loc m idents) body in
+      <:expr@loc< let module $uid:m$ : $module_type$ = $module_expr$ in $body$ >>
+    | expr -> super#expr expr
+
+  method str_item = function
     | <:str_item@loc< module type $s$ = $module_type$ >> ->
       let idents, module_type = self#ignore_module_type module_type in
       let warnings_removal = use_idents loc (qualify_idents loc s idents) in
@@ -972,23 +1013,29 @@ let ignore = object (self)
     | StAnt _ as str_item ->
       super#str_item str_item
 
-  method module_expr = function
+  method fold_map_on_functor_arg warnings_removal = function
     | MeFun (loc, s, mt, me) ->
+      (* wouldn't be quite right if you have a functor that takes several arguments with
+         the same name, but who would do that anyway? *)
       let idents, mt = self#ignore_module_type mt in
-      let warnings_removal = use_idents loc (qualify_idents loc s idents) in
-      let me = self#module_expr me in
-      let me =
-        match me with
-        | MeStr (loc, str_item) ->
-          MeStr (loc, <:str_item@loc< $warnings_removal$; $str_item$ >>)
-        | MeTyc (loc, MeStr (loc2, str_item), mt) ->
-          MeTyc (loc, MeStr (loc2, <:str_item@loc2< $warnings_removal$; $str_item$ >>), mt)
-        | _ ->
-          (* not ignoring the warnings in this case because we don't even know if $me$ is
-             a functor or not, which makes it impossible to find a way of inserting
-             $warnings_removal$ *)
-          me in
+      let more_warnings_removal = use_idents loc (qualify_idents loc s idents) in
+      let warnings_removal = <:str_item@loc< $warnings_removal$; $more_warnings_removal$ >> in
+      let me = self#fold_map_on_functor_arg warnings_removal me in
       MeFun (loc, s, mt, me)
+    | me ->
+      match self#module_expr me with
+      | MeStr (loc, str_item) ->
+        MeStr (loc, <:str_item@loc< $warnings_removal$; $str_item$ >>)
+      | MeTyc (loc, MeStr (loc2, str_item), mt) ->
+        MeTyc (loc, MeStr (loc2, <:str_item@loc2< $warnings_removal$; $str_item$ >>), mt)
+      | me ->
+        (* not ignoring the warnings in this case because we don't even know if $me$ is
+           a functor or not, which makes it impossible to find a way of inserting
+           $warnings_removal$ *)
+        me
+
+  method module_expr = function
+    | MeFun (loc, _, _, _) as me -> self#fold_map_on_functor_arg <:str_item@loc< >> me
 
     | MeStr _
     | MeTyc _
@@ -1001,7 +1048,8 @@ let ignore = object (self)
 
   (* Strip all the 'markers' that have not been handled *)
   method sig_item = function
-    | <:sig_item@loc< value $_$ : _no_unused_value_warning_ >> -> <:sig_item@loc< >>
+    | <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$  >> ->
+      <:sig_item@loc< value $id$ : $ctyp$ >>
     | sig_item -> super#sig_item sig_item
 
   method ignore_module_type = function
@@ -1020,18 +1068,31 @@ let ignore = object (self)
       idents, MtWit (loc, module_type, with_constr)
 
   method ignore_sig_item sig_item =
-    self#ignore_sig_item_aux [] sig_item
-  method ignore_sig_item_aux acc = function
-    | <:sig_item@loc< value $id$ : _no_unused_value_warning_ >> ->
-      <:ident@loc< $lid:id$ >> :: acc, <:sig_item@loc< >>
+    let next_defs = String_set.empty in
+    let _next_defs, acc, sig_item = self#ignore_sig_item_aux next_defs [] sig_item in
+    acc, sig_item
+  method ignore_sig_item_aux next_defs acc = function
+     | <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$ >> ->
+      if String_set.mem id next_defs then
+        next_defs, acc, <:sig_item@loc< >>
+      else
+        let next_defs = String_set.add id next_defs in
+        let sig_item = <:sig_item@loc< value $id$ : $self#ctyp ctyp$ >> in
+        next_defs, <:ident@loc< $lid:id$ >> :: acc, sig_item
+     | <:sig_item< value $id$ : $_$ >> as sig_item ->
+       let sig_item = self#sig_item sig_item in
+       let next_defs = String_set.add id next_defs in
+       next_defs, acc, sig_item
     | <:sig_item@loc< module $uid:m$ : $module_type$ >> ->
       let new_idents, module_type = self#ignore_module_type module_type in
-      acc @ qualify_idents loc m new_idents, <:sig_item@loc< module $uid:m$ : $module_type$ >>
+      next_defs, acc @ qualify_idents loc m new_idents, <:sig_item@loc< module $uid:m$ : $module_type$ >>
     | <:sig_item@loc< $si1$; $si2$ >> ->
-      let acc, si1 = self#ignore_sig_item_aux acc si1 in
-      let acc, si2 = self#ignore_sig_item_aux acc si2 in
-      acc, <:sig_item@loc< $si1$; $si2$ >>
-    | sig_item -> acc, self#sig_item sig_item
+      (* in here, we are traversing from right to left, so that when see an identifier
+         we already know whether a further 'val ...' will hide it *)
+      let next_defs, acc, si2 = self#ignore_sig_item_aux next_defs acc si2 in
+      let next_defs, acc, si1 = self#ignore_sig_item_aux next_defs acc si1 in
+      next_defs, acc, <:sig_item@loc< $si1$; $si2$ >>
+    | sig_item -> next_defs, acc, self#sig_item sig_item
 end
 
 let () =
