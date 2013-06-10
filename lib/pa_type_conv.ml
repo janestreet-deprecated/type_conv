@@ -6,17 +6,6 @@ open Camlp4
 open PreCast
 open Ast
 
-let parsing_mli = ref false
-let with_parsing_mli b f =
-  let old = !parsing_mli in
-  parsing_mli := b;
-  try let v = f () in
-      parsing_mli := old;
-      v
-  with e ->
-    parsing_mli := old;
-    raise e
-
 (* Utility functions *)
 
 let get_loc_err loc msg =
@@ -419,7 +408,7 @@ module Gen = struct
     inherit map as super
     method sig_item sig_item =
       match super#sig_item sig_item with
-      | <:sig_item@loc< value $id$ : $ctyp$ >> when not !parsing_mli ->
+      | <:sig_item@loc< value $id$ : $ctyp$ >> ->
         <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$ >>
       | sig_item -> sig_item
     method str_item str_item =
@@ -1069,22 +1058,26 @@ let ignore = object (self)
     | sig_item -> next_defs, acc, self#sig_item sig_item
 end
 
+let strip = object
+  inherit Ast.map as super
+
+  method sig_item = function
+  | <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$  >> ->
+    <:sig_item@loc< value $id$ : $ctyp$ >>
+  | sig_item -> super#sig_item sig_item
+end
+
 let () =
   (* above, the parser used 'sig' and 'end' as anchors but an mli is a signature
      without the sig and end. So here we catch all the elements that have been inserted
      at toplevel in the mli *)
-  let current_str_parser, current_sig_parser = Register.current_parser () in
+  let _, current_sig_parser = Register.current_parser () in
   Register.register_sig_item_parser (fun ?directive_handler _loc stream ->
-    with_parsing_mli true (fun () ->
-      let mli = current_sig_parser ?directive_handler _loc stream in
-      match Signature_stack.Item.delayed_sigs Signature_stack.bottom with
-      | [] -> mli
-      | sig_items -> <:sig_item< $list: mli :: sig_items$ >>
-    )
+    let mli = current_sig_parser ?directive_handler _loc stream in
+    match Signature_stack.Item.delayed_sigs Signature_stack.bottom with
+    | [] -> mli
+    | sig_items -> <:sig_item< $list: mli :: sig_items$ >>
   );
-  Register.register_str_item_parser (fun ?directive_handler _loc stream ->
-    with_parsing_mli false (fun () ->
-      let ml = current_str_parser ?directive_handler _loc stream in
-      ignore#str_item ml
-    )
-  )
+  AstFilters.register_sig_item_filter strip#sig_item;
+  AstFilters.register_str_item_filter ignore#str_item;
+  AstFilters.register_topphrase_filter ignore#str_item
