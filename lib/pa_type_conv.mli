@@ -127,6 +127,23 @@ val hash_variant : string -> int
 (** {6 General purpose code generation module} *)
 
 module Gen : sig
+
+  val regular_constr_of_revised_constr : string -> string
+    (* Transforms names of constructor of sum types (including polymorphic variants) from
+       their revised representation in the camlp4 ast to the representation they would
+       have in ocaml's ast.
+
+       This is supposed to be used like this:
+       match ctyp with
+       | <:ctyp< $uid:constr$ >> ->
+         <:expr< $str:regular_constr_of_revised_constr constr$ >>
+       | _ -> ...
+
+       so that <:ctyp< True >> becomes "true" and <:ctyp< True >> (assuming regular
+       ocaml in the quotation) becomes "True" and not " True".
+
+       Everything also applies to exception names. *)
+
   val exApp_of_list : expr list -> expr
   (** [expr_app_of_list l] takes list [l] of expressions [e1; e2; e3; ...]
       and returns the expression [e1 e2 e3].  C.f.: [Ast.exSem_of_list]. *)

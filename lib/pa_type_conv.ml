@@ -236,6 +236,15 @@ let add_set ~kind ~is_exn id ~set =
 (* General purpose code generation module *)
 
 module Gen = struct
+
+  (* same conversion as camlp4 does when converting its ast into ocaml's ast *)
+  let regular_constr_of_revised_constr = function
+    | " True" -> "True"
+    | " False" -> "False"
+    | "True" -> "true"
+    | "False" -> "false"
+    | s -> s
+
   (* Map of record field source locations to their default expression *)
   let record_defaults : (Loc.t, Ast.expr) Hashtbl.t = Hashtbl.create 0
 
