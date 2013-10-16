@@ -575,8 +575,8 @@ end = struct
     val bound_names = []
     method bound_names = bound_names
     method! ctyp = function
-      | Ast.TyDcl (_loc, n, _tpl, _tk, _cl) ->
-        {< bound_names = n :: bound_names >}
+      | Ast.TyDcl (_loc, n, tpl, tk, _cl) ->
+        {< bound_names = (n, tpl, tk) :: bound_names >}
       | ctyp ->
         super#ctyp ctyp
   end
@@ -607,7 +607,7 @@ end = struct
         | Some (id, _loc, params) ->
           let id =
             try
-              let new_ = StringMap.find id bound in
+              let new_, _, _ = StringMap.find id bound in
               used_bound := StringMap.add id (_loc, List.length params) !used_bound;
               new_
             with Not_found -> id in
@@ -624,15 +624,16 @@ end = struct
   let referenced_names td =
     let bound_names = bound_names td in
     let bound_names_map =
-      List.fold_left (fun acc name -> StringMap.add name (gen ()) acc)
+      List.fold_left (fun acc (name, tpl, tk) ->
+        StringMap.add name (gen (), tpl, tk) acc)
         StringMap.empty bound_names in
     let used_bound = ref StringMap.empty in
     let td = (referenced_names used_bound bound_names_map)#ctyp td in
     let bound_names_map =
-      StringMap.fold (fun key v acc ->
+      StringMap.fold (fun key (v, tpl, tk) acc ->
         try
           let arity = StringMap.find key !used_bound in
-          StringMap.add key (v, arity) acc
+          StringMap.add key (v, arity, tpl, tk) acc
         with Not_found -> acc
       ) bound_names_map StringMap.empty in
     td, bound_names_map, used_bound
@@ -649,9 +650,18 @@ end = struct
 
   let build_common _loc td =
     let td2, map, _set = referenced_names td in
-    StringMap.fold (fun k (v, arity) acc ->
+    StringMap.fold (fun k (v, arity, tpl, tk) acc ->
       let tydcl =
-        TyDcl (_loc, v, params_of_arity arity, constructor_of_arity k arity, [])
+        let tpl, rhs =
+          match tk with
+          | <:ctyp< $_$ == $_$ >> ->
+            (* Here we use the fact that when saying type nonrec ('a, 'b) t = ('a, 'b) t = ...,
+               the two list of parameters must be the same (not even shuffling one list is
+               allowed). *)
+            tpl, tk
+          | _ -> params_of_arity arity, constructor_of_arity k arity
+        in
+        TyDcl (_loc, v, tpl, rhs, [])
       in
       let new_constraints =
         <:with_constr< type $constructor_of_arity v arity$ := $constructor_of_arity k arity$ >>

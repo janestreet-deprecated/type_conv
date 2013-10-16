@@ -71,7 +71,7 @@ type record_field_generator = ctyp -> unit
 val add_record_field_generator : string -> record_field_generator -> unit
 (** [add_record_field_generator gen_name gen] adds the record field code
     generator [gen] with name [gen_name], which acts on the location
-    identifiying the record field. *)
+    identifying the record field. *)
 
 val add_record_field_generator_with_arg :
   string -> 'a Camlp4.PreCast.Gram.Entry.t ->
@@ -150,7 +150,7 @@ module Gen : sig
 
   val tyArr_of_list : ctyp list -> ctyp
   (** [tyArr_of_list l] takes list [l] of types [e1; e2; e3; ...] and
-      returns the type [e1 e2 e3].  C.f.: [Ast.exSem_of_list]. *)
+      returns the type [e1 -> e2 -> e3].  C.f.: [Ast.exSem_of_list]. *)
 
   val paOr_of_list : patt list -> patt
   (** [paOr_of_list l] takes list [l] of patterns [p1; p2; p3; ...] and returns
