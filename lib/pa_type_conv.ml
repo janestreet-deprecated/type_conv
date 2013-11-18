@@ -283,7 +283,7 @@ module Gen = struct
       <:patt@loc< $x$ | $paOr_of_list xs$ >>
 
   module PP = Camlp4.Printers.OCaml.Make (Syntax)
-  let conv_ctyp = (new PP.printer ())#ctyp
+  let conv_ctyp = (new PP.printer ~comments:false ())#ctyp
 
   let string_of_ctyp ctyp =
     try
@@ -374,10 +374,12 @@ module Gen = struct
       | Some true -> raise Stop
       | None ->
         match ctyp with
-        | <:ctyp< $_$ : $ctyp$ >> ->
+        | <:ctyp< $lid:_$ : $ctyp$ >> ->
           (* or else we would say that [type t = { t : int }] is recursive *)
           self#ctyp ctyp
         | <:ctyp< $lid:id$ >> -> if id = type_name then raise Stop else self
+        | <:ctyp< $uid:_$ : $args$ -> $_return_type$ >> -> self#ctyp args
+        | <:ctyp< $uid:_$ : $_return_type$ >> -> self
         | ctyp -> super#ctyp ctyp
   end
   let type_is_recursive ?(stop_on_functions = true) ?(short_circuit = fun _ -> None) type_name tp =
