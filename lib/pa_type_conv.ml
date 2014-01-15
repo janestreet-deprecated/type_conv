@@ -368,7 +368,7 @@ module Gen = struct
   exception Stop
   let type_is_recursive short_circuit type_name = object (self)
     inherit fold as super
-    method ctyp ctyp =
+    method! ctyp ctyp =
       match short_circuit ctyp with
       | Some false -> self
       | Some true -> raise Stop
@@ -417,12 +417,12 @@ module Gen = struct
 
   let ignore_everything = object (self)
     inherit map as super
-    method sig_item sig_item =
+    method! sig_item sig_item =
       match super#sig_item sig_item with
       | <:sig_item@loc< value $id$ : $ctyp$ >> ->
         <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$ >>
       | sig_item -> sig_item
-    method str_item str_item =
+    method! str_item str_item =
       match super#str_item str_item with
       | <:str_item@loc< value $rec:_$ $bindings$ >> as str_item -> (
         match self#ignore_binding bindings with
@@ -949,7 +949,7 @@ let use_idents_in loc idents body =
 let ignore = object (self)
   inherit Ast.map as super
 
-  method expr = function
+  method! expr = function
     | <:expr@loc< let module $uid:m$ : $module_type$ = $module_expr$ in $body$ >> ->
       let module_expr = self#module_expr module_expr in
       let idents, module_type = self#ignore_module_type module_type in
@@ -958,7 +958,7 @@ let ignore = object (self)
       <:expr@loc< let module $uid:m$ : $module_type$ = $module_expr$ in $body$ >>
     | expr -> super#expr expr
 
-  method str_item = function
+  method! str_item = function
     | <:str_item@loc< module type $s$ = $module_type$ >> ->
       let idents, module_type = self#ignore_module_type module_type in
       let warnings_removal = use_idents loc (qualify_idents loc s idents) in
@@ -1018,7 +1018,7 @@ let ignore = object (self)
            $warnings_removal$ *)
         me
 
-  method module_expr = function
+  method! module_expr = function
     | MeFun (loc, _, _, _) as me -> self#fold_map_on_functor_arg <:str_item@loc< >> me
 
     | MeStr _
@@ -1031,7 +1031,7 @@ let ignore = object (self)
       super#module_expr me
 
   (* Strip all the 'markers' that have not been handled *)
-  method sig_item = function
+  method! sig_item = function
     | <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$  >> ->
       <:sig_item@loc< value $id$ : $ctyp$ >>
     | sig_item -> super#sig_item sig_item
@@ -1082,7 +1082,7 @@ end
 let strip = object
   inherit Ast.map as super
 
-  method sig_item = function
+  method! sig_item = function
   | <:sig_item@loc< value $id$ : _no_unused_value_warning_ $ctyp$  >> ->
     <:sig_item@loc< value $id$ : $ctyp$ >>
   | sig_item -> super#sig_item sig_item
