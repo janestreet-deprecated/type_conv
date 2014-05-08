@@ -921,11 +921,11 @@ let () =
      module M : sig type t = [ `A ] with sexp end = ...
    is likely to generate a warning 'unused value t_of_sexp__' in the signature (the same
    warning in an implementation would be already removed).
-   To work around that, for every 'val name : type' auto generated, we insert a
-   'val name : _no_unused_value_warning_' next to it.
+   To work around that, every auto generated 'val name : type' is replaced by
+   'val name : type _no_unused_value_warning_'.
    And in a second step (could probably be done in one step, but it would be complicated),
-   we try to generate an expression that will use these name (which we recognize thanks to
-   the '_no_unused_value_warning_' mark).
+   we try to generate an expression that will use these names (which we recognize because
+   of the mark), and whether we succeed or not, we remove the mark.
    To use a 'val name : type' in a context like:
      module M : sig val name : type end = ...
    you simply need to do:
@@ -979,6 +979,12 @@ let ignore = object (self)
       let idents, module_type = self#ignore_module_type module_type in
       let warnings_removal = use_idents loc (qualify_idents loc m idents) in
       <:str_item@loc< module $uid:m$ : $module_type$ = $module_expr$; $warnings_removal$ >>
+
+    | <:str_item@loc< include ($module_expr$ : $module_type$) >> ->
+      let module_expr = self#module_expr module_expr in
+      let idents, module_type = self#ignore_module_type module_type in
+      let warnings_removal = use_idents loc idents in
+      <:str_item@loc< include ($module_expr$ : $module_type$); $warnings_removal$ >>
 
     | StMod _
     | StSem _
