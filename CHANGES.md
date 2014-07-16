@@ -1,3 +1,91 @@
+## 111.13.00
+
+- Removed some unused-value warnings when `with` is used in signatures.
+
+    Removed warnings in cases like:
+
+        include (module_expr : sig type t with bin_io end)
+
+## 109.60.00
+
+- Compatibility with warning 7 (method override)
+
+## 109.53.00
+
+Bump version number
+
+## 109.52.00
+
+- Removed comments from pretty-printed types in `type_conv` error
+  messages.
+
+## 109.47.00
+
+- Made `type nonrec` work when a type has both an equation and a representation.
+
+  For example:
+
+  ```ocaml
+  type t = A of t
+  module T = struct
+    type nonrec t = t = A of t
+  end
+  ```
+
+## 109.41.00
+
+- Fixed the generated code of `typerep` and `sexplib` on sum types containing `True` or `False`.
+
+  Without this fix, `typerep` would wrong constructor names for
+  `Blang.t`, for instance.
+
+  `Variantslib` has the same problem but applying the same fix there
+  would still not make the generated code compile because the generated
+  code would contain labels and variable named `true` or `false`.
+
+  Other syntax extensions should not be affected because they don't
+  build strings from constructor names.
+
+## 109.28.00
+
+- Fixed an issue with `type_conv` in the toplevel.
+
+  Used AST filters for the `_no_unused_value_warning_` machinery.
+  `type_conv` modifies the parser but it didn't work well in the
+  toplevel.
+
+  Removed the `parsing_mli` reference, an instead always add the
+  special `_no_unused_value_warning_` type and just strip it for
+  signature items.
+
+## 109.20.00
+
+- Removed some warnings caused by generated signatures.
+
+  1. In signatures on local modules.
+  2. When there are duplicate signature items like in this example:
+
+    ```ocaml
+    module Warnings : sig
+      type t = private { foo : int } with fields (** used to say unused value foo *)
+      val foo : string
+    end = struct
+      type t = { foo : int } with fields
+      let foo = "a"
+    end
+    ```
+
+  3. In the signatures of all the parameters of functors that take multiple
+     parameters; this used to work only for the last parameter.
+
+## 109.08.00
+
+- Fixed type_conv to stop dropping parens in arguments such as:
+
+    type t = {
+      a : int with default(1), sexp_drop_if(fun x -> (x + 1) * 2 = 4)
+    } with sexp
+
 ## 2012-07-15
 
 - Added support for record field annotations and defaults.
@@ -91,3 +179,4 @@
 ## 2007-10-14
 
 - Initial release.
+
