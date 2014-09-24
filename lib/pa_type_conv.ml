@@ -1027,6 +1027,7 @@ let ignore = object (self)
   method! module_expr = function
     | MeFun (loc, _, _, _) as me -> self#fold_map_on_functor_arg <:str_item@loc< >> me
 
+    | MeAtt _
     | MeStr _
     | MeTyc _
     | MeNil _
@@ -1043,6 +1044,8 @@ let ignore = object (self)
     | sig_item -> super#sig_item sig_item
 
   method ignore_module_type = function
+    | MtAlias _
+    | MtAtt _
     | MtNil _
     | MtId _
     | MtFun _
