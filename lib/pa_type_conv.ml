@@ -780,9 +780,29 @@ let rec types_used_by_type_conv = function
 
 let quotation_str_item = Gram.Entry.mk "quotation_str_item";;
 
+let () =
+  let delete_without_nonrec =
+    try
+      DELETE_RULE Gram str_item: "type"; type_declaration END;
+      DELETE_RULE Gram sig_item: "type"; type_declaration END;
+      None
+    with e -> Some e
+  and delete_with_nonrec =
+    try
+      let opt_nonrec = Gram.Entry.mk "opt_nonrec" in
+      DELETE_RULE Gram str_item: "type"; opt_nonrec; type_declaration END;
+      DELETE_RULE Gram sig_item: "type"; opt_nonrec; type_declaration END;
+      None
+    with e -> Some e
+  in
+  match delete_without_nonrec, delete_with_nonrec with
+  | None  , None   -> assert false
+  | Some _, None
+  | None  , Some _ -> ()
+  | Some e, Some _ -> raise e
+;;
+
 DELETE_RULE Gram str_item: "module"; a_UIDENT; module_binding0 END;
-DELETE_RULE Gram str_item: "type"; type_declaration END;
-DELETE_RULE Gram sig_item: "type"; type_declaration END;
 DELETE_RULE Gram module_type: "sig"; sig_items; "end" END;
 
 EXTEND Gram
