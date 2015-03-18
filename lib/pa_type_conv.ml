@@ -749,7 +749,7 @@ let rec fetch_generator_arg paren_count acc strm =
 let rec_ =
   Gram.Entry.of_parser "nonrec" (fun strm ->
     match Stream.peek strm with
-    | Some (LIDENT "nonrec", _) ->
+    | Some ((LIDENT "nonrec" | KEYWORD "nonrec"), _) ->
       Stream.junk strm;
       false
     | _ ->
