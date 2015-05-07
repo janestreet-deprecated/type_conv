@@ -1,3 +1,3 @@
 # OASIS_START
 # OASIS_STOP
-<lib/pa_type_conv.ml>: syntax_camlp4o
+<src/pa_type_conv.ml>: syntax_camlp4o

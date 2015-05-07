@@ -16,7 +16,7 @@ XStdFilesREADME:  false
 BuildTools:       ocamlbuild, camlp4o
 
 Library pa_type_conv
-  Path:               lib
+  Path:               src
   FindlibName:        type_conv
   Modules:            Pa_type_conv
   BuildDepends:       camlp4.quotations, camlp4.extend
