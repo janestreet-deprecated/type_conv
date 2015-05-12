@@ -5,7 +5,7 @@ Name:             type_conv
 Version:          112.01.00
 Synopsis:         type_conv - support library for preprocessor type conversions
 Authors:          Jane Street Group, LLC <opensource@janestreet.com>
-Copyrights:       (C) 2005-2013 Jane Street Group, LLC <opensource@janestreet.com>
+Copyrights:       (C) 2005-2013 Jane Street Group LLC <opensource@janestreet.com>
 Maintainers:      Jane Street Group, LLC <opensource@janestreet.com>
 License:          Apache-2.0
 LicenseFile:      LICENSE.txt
