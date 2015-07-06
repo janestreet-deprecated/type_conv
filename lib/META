@@ -1,6 +1,6 @@
 # OASIS_START
-# DO NOT EDIT (digest: f6eea730e115fa620ac8ee849e9dd316)
-version = "112.01.01"
+# DO NOT EDIT (digest: d1ac25a44b7f6cbab4a99f4032801765)
+version = "112.01.02"
 description = "Syntax extension for type_conv"
 requires = "camlp4"
 archive(syntax, preprocessor) = "pa_type_conv.cma"
