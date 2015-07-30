@@ -108,13 +108,13 @@ type 'str_or_sig generator =
 | `Set of string list ]
 
 (* Map of "with"-generators for types in structures *)
-let generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
+let str_generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for types in signatures *)
 let sig_generators : (string, Ast.sig_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for exceptions in structures *)
-let exn_generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
+let str_exn_generators : (string, Ast.str_item generator) Hashtbl.t = Hashtbl.create 0
 
 (* Map of "with"-generators for exceptions in signatures *)
 let sig_exn_generators : (string, Ast.sig_item generator) Hashtbl.t = Hashtbl.create 0
@@ -150,7 +150,7 @@ let safe_add_gen gens id gen_or_set =
 
 (* Register a "with"-generator for types in structures *)
 let add_generator_with_arg ?(is_exn = false) id entry e =
-  let gens = if is_exn then exn_generators else generators in
+  let gens = if is_exn then str_exn_generators else str_generators in
   safe_add_gen gens id (make_generator entry e)
 
 let add_generator ?is_exn id e =
@@ -158,7 +158,7 @@ let add_generator ?is_exn id e =
 
 (* Remove a "with"-generator for types in structures *)
 let rm_generator ?(is_exn = false) id =
-  let gens = if is_exn then exn_generators else generators in
+  let gens = if is_exn then str_exn_generators else str_generators in
   Hashtbl.remove gens id
 
 (* Register a "with"-generator for types in signatures *)
@@ -212,7 +212,7 @@ let add_sig_set ?(is_exn = false) id ~set =
   add_set_with_tbl ~tbl ~id ~set ~descr
 
 let add_str_set ?(is_exn = false) id ~set =
-  let tbl = if is_exn then exn_generators else generators in
+  let tbl = if is_exn then str_exn_generators else str_generators in
   let descr = if is_exn then "exceptions in structure items" else "types in structure items" in
   add_set_with_tbl ~tbl ~id ~set ~descr
 
@@ -282,23 +282,28 @@ module Gen = struct
       let loc = loc_of_patt x in
       <:patt@loc< $x$ | $paOr_of_list xs$ >>
 
-  module PP = Camlp4.Printers.OCaml.Make (Syntax)
-  let conv_ctyp = (new PP.printer ~comments:false ())#ctyp
+  module Pprintast = struct
+    include Pprintast
+    open Format
+    let string_of_core_type x =
+      ignore (flush_str_formatter ()) ;
+      let f = str_formatter in
+      Pprintast.default#core_type f x ;
+      flush_str_formatter () ;;
+  end
 
-  let string_of_ctyp ctyp =
-    try
-      let buffer = Buffer.create 32 in
-      Format.bprintf buffer "%a@?" conv_ctyp ctyp;
-      Some (Buffer.contents buffer)
-    with _ -> None
+  let string_of_ctyp (ctyp: Ast.ctyp) : string = (* via ocaml AST *)
+    let module Convert = Camlp4.Struct.Camlp4Ast2OCamlAst.Make (Ast) in
+    let loc = Ast.loc_of_ctyp ctyp in
+    let str : Ast.str_item = StTyp (loc,TyDcl (loc,"ttt",[],ctyp,[])) in
+    match (Convert.str_item str) with
+    | [{pstr_desc = Pstr_type [{ptype_manifest = Some typ; _} ]; _} ]
+      -> Pprintast.string_of_core_type typ
+    | _ -> assert false
 
   let error tp ~fn ~msg =
     let loc = Ast.loc_of_ctyp tp in
-    let failure =
-      match string_of_ctyp tp with
-      | Some tp_str -> sprintf "%s: %s\n%s" fn msg tp_str
-      | None -> sprintf "%s: %s" fn msg
-    in
+    let failure = sprintf "%s: %s\n%s" fn msg (string_of_ctyp tp) in
     Loc.raise loc (Failure failure)
 
   let unknown_type tp fn = error tp ~fn ~msg:"unknown type"
@@ -501,13 +506,13 @@ let find_generator ~name haystack = (); fun rec_ entry (needle,arg,gen_to_remove
     genf arg rec_ entry
   ) !generators
 
-let generate = find_generator ~name:"type" generators
+let str_generate = find_generator ~name:"type" str_generators
 
 let gen_derived_defs _loc rec_ tp drvs =
-  let coll drv der_sis = <:str_item< $der_sis$; $stSem_of_list (generate rec_ tp drv)$ >> in
+  let coll drv der_sis = <:str_item< $der_sis$; $stSem_of_list (str_generate rec_ tp drv)$ >> in
   List.fold_right coll drvs <:str_item< >>
 
-let generate_exn = find_generator ~name:"exception" exn_generators
+let generate_exn = find_generator ~name:"exception" str_exn_generators
 
 let gen_derived_exn_defs _loc tp drvs =
   let coll drv der_sis = <:str_item< $der_sis$; $stSem_of_list (generate_exn false tp drv)$ >> in

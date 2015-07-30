@@ -128,6 +128,9 @@ val hash_variant : string -> int
 
 module Gen : sig
 
+  (* For use in messages etc. *)
+  val string_of_ctyp : ctyp -> string
+
   val regular_constr_of_revised_constr : string -> string
     (* Transforms names of constructor of sum types (including polymorphic variants) from
        their revised representation in the camlp4 ast to the representation they would
