@@ -282,24 +282,16 @@ module Gen = struct
       let loc = loc_of_patt x in
       <:patt@loc< $x$ | $paOr_of_list xs$ >>
 
-  module Pprintast = struct
-    include Pprintast
-    open Format
-    let string_of_core_type x =
-      ignore (flush_str_formatter ()) ;
-      let f = str_formatter in
-      Pprintast.default#core_type f x ;
-      flush_str_formatter () ;;
-  end
+  module PP = Camlp4.Printers.OCaml.Make (Syntax)
+  let conv_ctyp = (new PP.printer ~comments:false ())#ctyp
 
-  let string_of_ctyp (ctyp: Ast.ctyp) : string = (* via ocaml AST *)
-    let module Convert = Camlp4.Struct.Camlp4Ast2OCamlAst.Make (Ast) in
-    let loc = Ast.loc_of_ctyp ctyp in
-    let str : Ast.str_item = StTyp (loc,TyDcl (loc,"ttt",[],ctyp,[])) in
-    match (Convert.str_item str) with
-    | [{pstr_desc = Pstr_type [{ptype_manifest = Some typ; _} ]; _} ]
-      -> Pprintast.string_of_core_type typ
-    | _ -> assert false
+  let string_of_ctyp ctyp =
+    try
+      let buffer = Buffer.create 32 in
+      Format.bprintf buffer "%a@?" conv_ctyp ctyp;
+      Buffer.contents buffer
+    with _ ->
+      "Cannot print type."
 
   let error tp ~fn ~msg =
     let loc = Ast.loc_of_ctyp tp in

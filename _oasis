@@ -19,7 +19,7 @@ Library pa_type_conv
   Path:               src
   FindlibName:        type_conv
   Modules:            Pa_type_conv
-  BuildDepends:       camlp4.quotations, camlp4.extend, compiler-libs.common
+  BuildDepends:       camlp4.quotations, camlp4.extend
   XMETAType:          syntax
   XMETARequires:      camlp4, compiler-libs.common
   XMETADescription:   Syntax extension for type_conv
