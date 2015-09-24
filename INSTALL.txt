@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: 5b7bdb2f1161f2b577f4079c742689a2) *)
+(* DO NOT EDIT (digest: ec301781780831fd51696109455dd2c3) *)
 
 This is the INSTALL file for the type_conv distribution.
 
@@ -13,7 +13,6 @@ In order to compile this package, you will need:
 
 * ocaml (>= 4.00.0)
 * findlib (>= 1.3.2)
-* compiler-libs
 
 Installing
 ==========
